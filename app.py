@@ -1,24 +1,21 @@
 import discord
-from discord.ext import commands , tasks 
+from discord.ext import commands, tasks
 import os
 import traceback
 from flask import Flask
 import threading
 import sys
 import aiohttp
-
+import requests
 from dotenv import load_dotenv
 
-
+# ================= FLASK (para mantener el bot activo) =================
 app = Flask(__name__)
-bot_name = "None"
-
-
+bot_name = "PETER LIKE BOT"
 
 @app.route('/')
 def home():
-    return f"Bot {bot_name} is active"
-
+    return f"✅ {bot_name} está activo!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -28,120 +25,139 @@ def run_flask():
     else:
         app.run(host='0.0.0.0', port=port)
 
-
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
-if os.path.exists(".env"):
-    load_dotenv()
+# ================= CONFIGURACIÓN =================
+# ⚠️ TU TOKEN DE DISCORD (ya incluido)
+TOKEN = "MTUzMTQzNjk3MDc0NjU4MTA0Mg.GkMGYn.CBZT2ho7jrP7-GFFc54fZNv8dJoQexQzzX_0Ko"
 
-TOKEN = os.getenv("TOKEN")
-if not TOKEN:
-    raise ValueError("TOKEN not found in environment variables")
+# URL de tu API (la que desplegaste en Vercel)
+API_URL = "https://peterlikeapi.vercel.app/api/like"
+INFO_API = "https://player-info-ob54.vercel.app/player-info?uid={uid}"
+OWNER_KEY = "YOUR_SECRET_OWNER_KEY"  # Cámbiala si usas key en tu API
 
-extensions = [
-    "cogs.likeCommands"
-]
+# ================= BOT =================
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
+# ================= EVENTOS =================
+@bot.event
+async def on_ready():
+    print(f"🔗 Conectado como {bot.user}")
+    print(f"🌐 Servidores: {len(bot.guilds)}")
+    await bot.tree.sync()
+    print("✅ Comandos slash sincronizados")
+    activity = discord.Game(name="❤️ Free Fire Likes")
+    await bot.change_presence(activity=activity)
 
-class Seemu(commands.Bot):
-    def __init__(self, command_prefix: str, intents: discord.Intents, **kwargs):
-        super().__init__(command_prefix=command_prefix, intents=intents, **kwargs)
-        self.session = None
-        self.initialized = False
+# ================= COMANDOS SLASH =================
+@bot.tree.command(name="like", description="Envía likes a un perfil de Free Fire")
+async def like(interaction: discord.Interaction, uid: str, region: str = "IND"):
+    await interaction.response.defer()
 
-    async def setup_hook(self) -> None:
-        self.session = aiohttp.ClientSession()
+    try:
+        params = {"uid": uid, "region": region.upper()}
+        if OWNER_KEY and OWNER_KEY != "YOUR_SECRET_OWNER_KEY":
+            params["key"] = OWNER_KEY
 
-        for ext in extensions:
-            try:
-                await self.load_extension(ext)
-                print(f"✅ {ext} loaded successfully")
-            except Exception as e:
-                print(f"❌ Failed to load {ext}: {e}")
-                traceback.print_exc()
+        response = requests.get(API_URL, params=params, timeout=15)
 
-        await self.tree.sync()
-        print("✔ All cogs loaded")
-        self.initialized = True
-        self.update_activity_task.start()
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("success"):
+                embed = discord.Embed(
+                    title="✅ Likes Enviados",
+                    description=f"**{data['likes_given']}** likes añadidos a **{data['name']}**",
+                    color=discord.Color.green()
+                )
+                embed.add_field(name="👤 Jugador", value=data['name'], inline=True)
+                embed.add_field(name="🆔 UID", value=uid, inline=True)
+                embed.add_field(name="🌍 Región", value=data['region'], inline=True)
+                embed.add_field(name="👍 Antes", value=data['likes_before'], inline=True)
+                embed.add_field(name="🚀 Después", value=data['likes_after'], inline=True)
+                embed.set_footer(text="PETER LIKE BOT")
+                await interaction.followup.send(embed=embed)
+            else:
+                embed = discord.Embed(
+                    title="❌ Error",
+                    description=data.get("message", "Error desconocido"),
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed)
+        else:
+            error_text = response.json().get("message", f"HTTP {response.status_code}")
+            embed = discord.Embed(
+                title="❌ Error de API",
+                description=error_text,
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
 
-    async def on_ready(self):
-        global bot_name
-        if not self.initialized:
-            return
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error",
+            description=f"Error: {str(e)}",
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
 
-        server_count = len(self.guilds) #
-        activity = discord.Game(name=f"Sharing likes on {server_count} servers")
-        await self.change_presence(activity=activity)
-        bot_name = f"{self.user}"
-        print(f"\n🔗 Connected as {bot_name}")
-        print(f"🌐 Flask running on port {os.environ.get('PORT', 10000)}\n")
+@bot.tree.command(name="info", description="Obtén información de un jugador")
+async def info(interaction: discord.Interaction, uid: str):
+    await interaction.response.defer()
 
-    @tasks.loop(minutes=5) 
-    
-    async def update_activity_task(self):
+    try:
+        url = INFO_API.format(uid=uid)
+        response = requests.get(url, timeout=10)
 
-        try:
-            server_count = len(self.guilds) #
-            activity = discord.Game(name=f"Sharing likes on {server_count} servers !! ")
-            await self.change_presence(activity=activity)
-            print(f"Activité mise à jour : Partage de likes sur {server_count} serveurs")
+        if response.status_code == 200:
+            data = response.json()
+            info = data.get("basicInfo", {})
 
-        except Exception as e:
-            print(f"⚠️ Erreur lors de la mise à jour de l'activité : {e}")
-            traceback.print_exc()
+            embed = discord.Embed(
+                title="📊 Información del Jugador",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="👤 Nickname", value=info.get("nickname", "N/A"), inline=True)
+            embed.add_field(name="🆔 UID", value=uid, inline=True)
+            embed.add_field(name="🌍 Región", value=info.get("region", "N/A"), inline=True)
+            embed.add_field(name="🎮 Nivel", value=info.get("level", "N/A"), inline=True)
+            embed.add_field(name="🏅 Rango", value=info.get("rank", "N/A"), inline=True)
+            embed.add_field(name="❤️ Likes", value=info.get("liked", 0), inline=True)
+            embed.set_footer(text="PETER LIKE BOT")
+            await interaction.followup.send(embed=embed)
+        else:
+            embed = discord.Embed(
+                title="❌ Error",
+                description="Jugador no encontrado",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
 
-    @update_activity_task.before_loop
-    async def before_update_activity_task(self):
-       
-        await self.wait_until_ready()
-        print("Bot ready, starting activity update loop.")
-    async def close(self):
-        if self.session:
-            await self.session.close()
-        await super().close()
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ Error",
+            description=str(e),
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
 
-    
+# ================= COMANDO PING =================
+@bot.tree.command(name="ping", description="Verifica que el bot está activo")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message("🏓 Pong! Bot activo.", ephemeral=True)
 
-    @commands.Cog.listener()
-    async def on_command_error(self, ctx, error):
-        """Global error handler for all commands"""
-        if isinstance(error, commands.MissingPermissions):
-            try:
-                msg = "❌ You need to be an administrator to use this command."
-                if ctx.interaction and ctx.interaction.response.is_done():
-                    await ctx.followup.send(msg, ephemeral=True)
-                else:
-                    await ctx.send(msg, ephemeral=True)
-            except:
-                pass
-            return
-
-        elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send("⚠️ Missing required argument.", ephemeral=True)
-            return
-
-        elif isinstance(error, commands.CommandNotFound):
-            return
-
-        print(f"Unhandled error: {error}")
-        traceback.print_exc()
-        await ctx.send("⚠️ An unexpected error occurred. [1214]", ephemeral=True)
-
-
+# ================= INICIO =================
 if __name__ == "__main__":
     try:
-        intents = discord.Intents.all()
-        bot = Seemu(command_prefix="!", intents=intents)
         bot.run(TOKEN)
     except discord.errors.LoginFailure:
-        print("❌ Invalid Discord token")
+        print("❌ Token de Discord inválido")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\n🛑 Stopping bot...")
+        print("\n🛑 Bot detenido.")
         sys.exit(0)
     except Exception as e:
-        print(f"⚠️ Unexpected error: {e}")
+        print(f"⚠️ Error: {e}")
         traceback.print_exc()
         sys.exit(1)
